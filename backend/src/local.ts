@@ -58,5 +58,5 @@ const server = createServer(async (req, res) => {
 });
 
 await seedStats(repo);
-await seedDemoClaims(service, blob);
+await seedDemoClaims(service, blob, { repo });
 server.listen(PORT, () => console.log(`\nLocal API on ${base}`));

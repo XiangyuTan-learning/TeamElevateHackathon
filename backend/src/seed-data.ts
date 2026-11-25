@@ -24,7 +24,20 @@ async function upload(service: Service, who: Principal, claimId: string, slot: s
 }
 
 /** Three demo claims at different stages. Prints the sign-in details for the family portal. */
-export async function seedDemoClaims(service: Service, blob: { write(k: string, d: Buffer, t: string): Promise<void> }, log = console.log) {
+/** Moves a claim's timestamps back in time, so demos can show claims that are already over their SLA. */
+export async function backdateClaim(repo: Repo, claimId: string, days: number) {
+  const ms = days * 86400000;
+  const shift = (iso?: string) => (iso ? new Date(new Date(iso).getTime() - ms).toISOString() : iso);
+  const claim = (await repo.getClaim(claimId))!;
+  await repo.putClaim({ ...claim, createdAt: shift(claim.createdAt)! });
+  for (const s of await repo.listSteps(claimId)) {
+    for (const o of Object.values(s.owners)) if (o?.updatedAt) o.updatedAt = shift(o.updatedAt);
+    await repo.putStep({ ...s, completedAt: shift(s.completedAt) });
+  }
+}
+
+export async function seedDemoClaims(service: Service, blob: { write(k: string, d: Buffer, t: string): Promise<void> }, opts: { repo?: Repo; log?: (s: string) => void } = {}) {
+  const log = opts.log ?? console.log;
   const grow = staff('grow'), ngs = staff('ngs'), tal = staff('tal');
   const make = async (name: string, claimants: { name: string; relationship: string }[]) => (await service.createClaim(grow, { deceasedName: name, memberNumber: String(10000000 + Math.floor(Math.random() * 89999999)), claimants }));
 
@@ -49,6 +62,8 @@ export async function seedDemoClaims(service: Service, blob: { write(k: string, 
   await upload(service, f, cId, 'claimant_id', 'passport-blurry.pdf', 'C1', blob);
   await upload(service, f, cId, 'relationship_proof', 'marriage-certificate.pdf', 'C1', blob);
   await service.verifyClaim(cId);
+  // Open for 16 days against a 14 day documents SLA, so the claim list shows a breach.
+  if (opts.repo) await backdateClaim(opts.repo, cId, 16);
 
   log('\nDemo claims (family portal sign-in):');
   for (const x of [a, b, c]) for (const cl of x.claimants) log(`  ${x.claim.claimId}  passcode ${cl.passcode}  (${cl.name}, claim for ${x.claim.deceasedName})`);

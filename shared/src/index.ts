@@ -21,17 +21,18 @@ export interface StepDef {
   familyDescription: string;
   owners: Owner[]; // every owner must mark done for the step to complete
   hiddenFromFamily?: boolean;
+  slaDays: number; // target calendar days to complete the step, from when it becomes available
 }
 
 export const STEPS: StepDef[] = [
-  { id: 1, title: 'Claim notified', familyTitle: 'Claim registered', familyDescription: 'Your claim has been registered.', owners: ['grow'], hiddenFromFamily: true },
-  { id: 2, title: 'Identity and cover confirmed', familyTitle: 'Identity confirmed', familyDescription: 'Identity and cover were confirmed on your call.', owners: ['grow'], hiddenFromFamily: true },
-  { id: 3, title: 'Documents collected', familyTitle: 'Upload your documents', familyDescription: 'Upload the documents on your checklist. Each document only needs to be uploaded once, and NGS Super, TAL and GROW can all see it.', owners: ['family'] },
-  { id: 4, title: 'Documents verified', familyTitle: 'We verify your documents', familyDescription: 'Your documents are checked with our identity verification partner, GreenID.', owners: ['system'] },
-  { id: 5, title: 'Assess and coordinate', familyTitle: 'We assess your claim', familyDescription: 'NGS Super, TAL and GROW review your claim together. You do not need to contact each of them.', owners: ['tal', 'ngs', 'grow'] },
-  { id: 6, title: 'Insurer decision', familyTitle: 'Insurer decision', familyDescription: 'TAL, the insurer, decides whether the insurance part of your claim is accepted.', owners: ['tal'] },
-  { id: 7, title: 'Trustee decision', familyTitle: 'Trustee decision', familyDescription: 'The trustee decides eligibility and who receives the benefit.', owners: ['ngs'] },
-  { id: 8, title: 'Communicate outcome and pay', familyTitle: 'Outcome and payment', familyDescription: 'We explain the outcome and arrange payment.', owners: ['grow', 'tal'] },
+  { id: 1, title: 'Claim notified', familyTitle: 'Claim registered', familyDescription: 'Your claim has been registered.', slaDays: 5, owners: ['grow'], hiddenFromFamily: true },
+  { id: 2, title: 'Identity and cover confirmed', familyTitle: 'Identity confirmed', familyDescription: 'Identity and cover were confirmed on your call.', slaDays: 5, owners: ['grow'], hiddenFromFamily: true },
+  { id: 3, title: 'Documents collected', familyTitle: 'Upload your documents', familyDescription: 'Upload the documents on your checklist. Each document only needs to be uploaded once, and NGS Super, TAL and GROW can all see it.', slaDays: 14, owners: ['family'] },
+  { id: 4, title: 'Documents verified', familyTitle: 'We verify your documents', familyDescription: 'Your documents are checked with our identity verification partner, GreenID.', slaDays: 1, owners: ['system'] },
+  { id: 5, title: 'Assess and coordinate', familyTitle: 'We assess your claim', familyDescription: 'NGS Super, TAL and GROW review your claim together. You do not need to contact each of them.', slaDays: 10, owners: ['tal', 'ngs', 'grow'] },
+  { id: 6, title: 'Insurer decision', familyTitle: 'Insurer decision', familyDescription: 'TAL, the insurer, decides whether the insurance part of your claim is accepted.', slaDays: 5, owners: ['tal'] },
+  { id: 7, title: 'Trustee decision', familyTitle: 'Trustee decision', familyDescription: 'The trustee decides eligibility and who receives the benefit.', slaDays: 10, owners: ['ngs'] },
+  { id: 8, title: 'Communicate outcome and pay', familyTitle: 'Outcome and payment', familyDescription: 'We explain the outcome and arrange payment.', slaDays: 5, owners: ['grow', 'tal'] },
 ];
 
 export type OwnerStatus = 'pending' | 'done' | 'blocked';
@@ -199,7 +200,8 @@ export interface FamilyTracker {
 export interface ClaimSummary {
   claim: Claim;
   claimantCount: number;
-  currentStep: { id: number; title: string; status: StepStatus } | null; // null when all complete
+  // null when all steps are complete. startedAt is when the step became available (the previous step completed).
+  currentStep: { id: number; title: string; status: StepStatus; startedAt: string; slaDays: number } | null;
   waitingOn: Owner[];
   closedAt?: string; // set when every step is complete
   docsReceived: number;

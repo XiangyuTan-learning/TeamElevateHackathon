@@ -55,6 +55,21 @@ describe('claims', () => {
     assert.deepEqual(d.steps.slice(0, 3).map((s) => s.status), ['completed', 'completed', 'in_progress']);
   });
 
+  it('reports the current step with its SLA and when it started', async () => {
+    const c = await newClaim();
+    let [row] = await service.listClaims(staff('tal'));
+    assert.equal(row!.currentStep!.id, 3);
+    assert.equal(row!.currentStep!.slaDays, 14);
+    assert.equal(row!.currentStep!.startedAt, c.claim.createdAt);
+    await completeDocs(c);
+    await service.verifyClaim(c.id);
+    [row] = await service.listClaims(staff('tal'));
+    assert.equal(row!.currentStep!.id, 5);
+    assert.equal(row!.currentStep!.slaDays, 10);
+    const steps = (await service.staffClaimDetail(staff('tal'), c.id)).steps;
+    assert.equal(row!.currentStep!.startedAt, steps[3]!.completedAt); // starts when step 4 completes
+  });
+
   it('family sign-in needs the passcode and locks after repeated failures', async () => {
     const c = await newClaim();
     const ok = await service.familyLogin(c.id.toLowerCase(), c.claimants[0]!.passcode.toLowerCase().replace('-', ' '));

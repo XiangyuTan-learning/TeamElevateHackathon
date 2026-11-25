@@ -45,8 +45,11 @@ Staff users are `ngs.demo@example.com`, `grow.demo@example.com` and `tal.demo@ex
 
 ## How the rules work
 
-- Steps 1 and 2 are done when GROW registers the claim. The family sees them as one "Claim registered" line.
+- Steps: 1 notified and 2 identity confirmed (GROW, done at registration; the family sees one "Claim registered" line), 3 documents (family), 4 verification (GreenID), 5 assess and coordinate (TAL, NGS, GROW), 6 insurer decision (TAL), 7 trustee decision (NGS), 8 outcome and payment (GROW, TAL).
+- Every party sees all steps. A party can only act on the steps it owns.
 - A step with several owners completes only when every owner marks done. The next step stays locked until then.
+- Staff portals show how long each claim has been open (or how long it took) and the time spent in each step.
+- The family portal is available in English, Chinese (Simplified), Vietnamese and Arabic (right-to-left). Translations live in `web/src/i18n.tsx` and need professional review. Staff-written notes are shown as written.
 - An owner can reopen its part while the next step is incomplete, or flag a problem with a note the family can see.
 - The document checklist has claim-level items (shared by all claimants) and per-claimant items. Step 3 completes when all are in.
 - The same file (SHA-256) uploaded twice in a claim is refused, with a message naming where it already is.
@@ -56,6 +59,6 @@ Staff users are `ngs.demo@example.com`, `grow.demo@example.com` and `tal.demo@ex
 ## Not done yet (prototype limits)
 
 - GreenID is a mock behind `backend/src/greenid.ts`.
-- No email or SMS. Passcodes are given to the family by phone. Specialist requests appear in the NGS and GROW portals.
+- No email or SMS. Passcodes are given to the family by phone. Claim specialist requests appear in the NGS and GROW portals.
 - Step updates are read-then-write without optimistic locking. Two parties saving at the same instant could overwrite each other.
 - Resources use a DESTROY removal policy. Use RETAIN, add malware scanning for uploads, WAF, and a custom domain for production.
