@@ -1,0 +1,14 @@
+{
+  "name": "claims-hub",
+  "private": true,
+  "type": "module",
+  "workspaces": ["shared", "backend", "web", "infra"],
+  "scripts": {
+    "dev:api": "npm run dev -w backend",
+    "dev:web": "npm run dev -w web",
+    "test": "npm test -w backend",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "build:web": "npm run build -w web",
+    "deploy": "npm run build:web && npm run deploy -w infra"
+  }
+}
