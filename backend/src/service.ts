@@ -534,7 +534,15 @@ export class Service {
       out.push({
         claim,
         claimantCount: claimants.length,
-        currentStep: current ? { id: current.def.id, title: current.def.title, status: current.status } : null,
+        currentStep: current
+          ? {
+              id: current.def.id,
+              title: current.def.title,
+              status: current.status,
+              slaDays: current.def.slaDays,
+              startedAt: derived[current.def.id - 2]?.state.completedAt ?? claim.createdAt,
+            }
+          : null,
         waitingOn: current?.pendingOwners ?? [],
         closedAt: current ? undefined : this.closedAt(derived),
         docsRequired: required.length,

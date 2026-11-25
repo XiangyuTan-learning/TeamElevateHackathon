@@ -82,6 +82,23 @@ function OpenFor({ createdAt, closedAt, now }: { createdAt: string; closedAt?: s
     : <span className="timer">{fmtDuration(now - start)}</span>;
 }
 
+/** SLA target, time spent on the current step in days, and whether it is within the target. Red when exceeded. */
+function SlaCells({ step, now }: { step: ClaimSummary['currentStep']; now: number }) {
+  if (!step) return <><td className="muted">–</td><td className="muted">–</td><td className="muted">–</td></>;
+  const days = Math.max(0, (now - new Date(step.startedAt).getTime()) / 86400000);
+  const within = days <= step.slaDays;
+  const cls = within ? '' : 'sla-breach';
+  return (
+    <>
+      <td className={cls}>{step.slaDays} {step.slaDays === 1 ? 'day' : 'days'}</td>
+      <td className={cls}>{days.toFixed(1)} days</td>
+      <td className={cls}>
+        <label className="check"><input type="checkbox" checked={within} readOnly disabled aria-label={within ? 'Within SLA' : 'SLA exceeded'} /> {within ? 'Yes' : 'Exceeded'}</label>
+      </td>
+    </>
+  );
+}
+
 export function ClaimList() {
   const me = staffSession()!.party;
   const { data, error } = useLoad(() => api<ClaimSummary[]>('/staff/claims', { as: 'staff' }), [], 15000);
@@ -98,7 +115,7 @@ export function ClaimList() {
       </div>
       <div className="card tablewrap">
         <table>
-          <thead><tr><th>Claim</th><th>Member</th><th>Registered</th><th>Open for</th><th>Documents</th><th>Current step</th><th>Waiting on</th></tr></thead>
+          <thead><tr><th>Claim</th><th>Member</th><th>Registered</th><th>Open for</th><th>Task SLA</th><th>Task open for</th><th>Within SLA?</th><th>Documents</th><th>Current step</th><th>Waiting on</th></tr></thead>
           <tbody>
             {rows.map((c) => (
               <tr key={c.claim.claimId}>
@@ -106,12 +123,13 @@ export function ClaimList() {
                 <td>{c.claim.deceasedName}<div className="muted">{c.claimantCount} claimant{c.claimantCount === 1 ? '' : 's'}</div></td>
                 <td>{fmtDate(c.claim.createdAt)}</td>
                 <td><OpenFor createdAt={c.claim.createdAt} closedAt={c.closedAt} now={now} /></td>
+                <SlaCells step={c.currentStep} now={now} />
                 <td>{c.docsReceived}/{c.docsRequired}</td>
                 <td>{c.currentStep ? <>{c.currentStep.id}. {c.currentStep.title} <span className={`chip ${c.currentStep.status}`}>{STATUS_LABEL[c.currentStep.status]}</span></> : <span className="chip completed">All steps complete</span>}</td>
                 <td>{c.waitingOn.map((o) => <span key={o} className={`tag ${o === me ? 'me' : ''}`}>{OWNER_LABEL[o]}</span>)}</td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={7} className="muted">Nothing here.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={10} className="muted">Nothing here.</td></tr>}
           </tbody>
         </table>
       </div>

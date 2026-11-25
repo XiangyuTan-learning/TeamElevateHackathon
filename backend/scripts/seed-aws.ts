@@ -35,4 +35,4 @@ const repo = new Repo(new DynamoKV(env('TABLE_NAME')));
 const blob = new S3Blob(env('BUCKET_NAME'));
 const service = new Service({ repo, blob, classifier: new FilenameClassifier(), greenId: new MockGreenId(), counsellingUrl: '', startVerification: async () => {} });
 await seedStats(repo);
-await seedDemoClaims(service, blob);
+await seedDemoClaims(service, blob, { repo });
