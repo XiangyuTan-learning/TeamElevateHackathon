@@ -98,7 +98,7 @@ export class ClaimHubStack extends cdk.Stack {
       USER_POOL_ID: pool.userPoolId,
       CLIENT_ID: client.userPoolClientId,
       SECRET_ARN: familySecret.secretArn,
-      COUNSELLING_URL: 'https://example.com/member-counselling', // mock link
+      COUNSELLING_URL: 'https://www.tal.com.au/claims/health-support/grief-support',
       BEDROCK_MODEL_ID: (this.node.tryGetContext('bedrockModelId') as string | undefined) ?? '',
     };
     const fnProps = (handler: string, env: Record<string, string>) => ({

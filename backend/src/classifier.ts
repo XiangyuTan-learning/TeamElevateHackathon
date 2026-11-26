@@ -16,11 +16,16 @@ export interface Classifier {
   classify(input: ClassifyInput): Promise<Classification>;
 }
 
+const ID_WORDS = /licen[cs]e|passport|medicare|photo.?id|[_\-\s]id\b|\bid[_\-\s]/i;
 const KEYWORDS: Record<string, RegExp> = {
-  death_certificate: /death|deceased|certificate of death/i,
-  will: /\bwill\b|probate/i,
-  claimant_id: /licen[cs]e|passport|photo.?id|\bid\b/i,
-  relationship_proof: /marriage|birth|relationship|partner|spouse/i,
+  death_certificate: /death.?cert|certificate.?of.?death/i,
+  death_claim_form: /claim.?form|death.?claim/i,
+  bank_statement: /bank|statement/i,
+  probate: /probate|letters?.?of.?admin|administration/i,
+  will: /\bwill\b|testament/i,
+  court_order: /court|\border\b/i,
+  deceased_id: ID_WORDS,
+  claimant_id: ID_WORDS,
 };
 
 /** Filename heuristic. Used when no model is configured and as the fallback if the model call fails. */

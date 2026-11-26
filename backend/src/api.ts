@@ -36,6 +36,8 @@ export function createApi(service: Service, auth: Authenticator, getSecret: () =
   add('POST', '/family/documents/:docId/complete', (c) => service.completeUpload(c.family(), c.family().claimId, c.params.docId!));
   add('GET', '/family/documents/:docId/download', (c) => service.downloadUrl(c.family(), c.family().claimId, c.params.docId!));
   add('POST', '/family/support-requests', (c) => service.createSupportRequest(c.family(), c.body));
+  add('POST', '/family/support-requests/:requestId', (c) => service.editSupportRequest(c.family(), c.params.requestId!, c.body));
+  add('POST', '/family/support-requests/:requestId/cancel', (c) => service.cancelSupportRequest(c.family(), c.params.requestId!));
 
   // staff
   add('GET', '/staff/me', async (c) => ({ party: c.staff().party, username: c.staff().username }));
@@ -47,6 +49,7 @@ export function createApi(service: Service, auth: Authenticator, getSecret: () =
     return service.staffClaimDetail(c.staff(), c.params.claimId!);
   });
   add('POST', '/staff/claims/:claimId/claimants', (c) => service.addClaimant(c.staff(), c.params.claimId!, c.body));
+  add('POST', '/staff/claims/:claimId/claimants/:claimantId', (c) => service.updateClaimant(c.staff(), c.params.claimId!, c.params.claimantId!, c.body));
   add('POST', '/staff/claims/:claimId/claimants/:claimantId/passcode', (c) => service.reissuePasscode(c.staff(), c.params.claimId!, c.params.claimantId!));
   add('POST', '/staff/claims/:claimId/documents', (c) => service.initUpload(c.staff(), c.params.claimId!, c.body));
   add('POST', '/staff/claims/:claimId/documents/:docId/complete', (c) => service.completeUpload(c.staff(), c.params.claimId!, c.params.docId!));

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useParams } from 'react-router-dom';
-import { OWNER_LABEL, type ClaimSummary, type Owner, type StaffClaimDetail, type SupportRequest } from '@claims/shared';
+import { AU_STATES, CHOICE_LABELS, OWNER_LABEL, type ClaimSummary, type Owner, type StaffClaimDetail, type SupportRequest } from '@claims/shared';
 import { api, fmtDateTime, fmtDate, fmtDuration, getConfig, openDocument, setStaffSession, staffDevSignIn, staffSession, staffSignIn, uploadDocument, useLoad, type Party } from './lib';
 
 const PARTY_NAME: Record<Party, string> = { ngs: 'NGS Super', grow: 'GROW', tal: 'TAL' };
@@ -55,7 +55,7 @@ export function StaffShell() {
         </div>
         <nav className="row">
           <Link to="/staff">Claims</Link>
-          {s.party === 'grow' && <Link to="/staff/new">Register claim</Link>}
+          {s.party !== 'tal' && <Link to="/staff/new">Register claim</Link>}
           {s.party !== 'tal' && <Link to="/staff/requests">Claim Specialist Requests</Link>}
           <button className="link inv" onClick={() => { setStaffSession(null); nav('/'); }}>Sign out</button>
         </nav>
@@ -85,16 +85,14 @@ function OpenFor({ createdAt, closedAt, now }: { createdAt: string; closedAt?: s
 /** SLA target, time spent on the current step in days, and whether it is within the target. Red when exceeded. */
 function SlaCells({ step, now }: { step: ClaimSummary['currentStep']; now: number }) {
   if (!step) return <><td className="muted">–</td><td className="muted">–</td><td className="muted">–</td></>;
-  const days = Math.max(0, (now - new Date(step.startedAt).getTime()) / 86400000);
+  // Whole days, rounded up, so the number shown always agrees with Yes/No: 14 days against a 14 day SLA is Yes, 15 is No.
+  const days = Math.ceil(Math.max(0, now - new Date(step.startedAt).getTime()) / 86400000);
   const within = days <= step.slaDays;
-  const cls = within ? '' : 'sla-breach';
   return (
     <>
-      <td className={cls}>{step.slaDays} {step.slaDays === 1 ? 'day' : 'days'}</td>
-      <td className={cls}>{days.toFixed(1)} days</td>
-      <td className={cls}>
-        <label className="check"><input type="checkbox" checked={within} readOnly disabled aria-label={within ? 'Within SLA' : 'SLA exceeded'} /> {within ? 'Yes' : 'Exceeded'}</label>
-      </td>
+      <td>{step.slaDays}</td>
+      <td>{days}</td>
+      <td>{within ? 'Yes' : <span className="tag breach">No</span>}</td>
     </>
   );
 }
@@ -115,17 +113,17 @@ export function ClaimList() {
       </div>
       <div className="card tablewrap">
         <table>
-          <thead><tr><th>Claim</th><th>Member</th><th>Registered</th><th>Open for</th><th>Task SLA</th><th>Task open for</th><th>Within SLA?</th><th>Documents</th><th>Current step</th><th>Waiting on</th></tr></thead>
+          <thead><tr><th>Claim</th><th>Member</th><th>Registered</th><th>Open for</th><th>Task SLA (days)</th><th>Task open for (days)</th><th>Within SLA?</th><th>Documents</th><th>Current step</th><th>Waiting on</th></tr></thead>
           <tbody>
             {rows.map((c) => (
               <tr key={c.claim.claimId}>
                 <td><Link to={`/staff/claims/${c.claim.claimId}`}>{c.claim.claimId}</Link></td>
-                <td>{c.claim.deceasedName}<div className="muted">{c.claimantCount} claimant{c.claimantCount === 1 ? '' : 's'}</div></td>
+                <td>{c.claim.deceasedName}{me !== 'tal' && <div className="muted">{c.claimantCount} claimant{c.claimantCount === 1 ? '' : 's'}</div>}</td>
                 <td>{fmtDate(c.claim.createdAt)}</td>
                 <td><OpenFor createdAt={c.claim.createdAt} closedAt={c.closedAt} now={now} /></td>
                 <SlaCells step={c.currentStep} now={now} />
                 <td>{c.docsReceived}/{c.docsRequired}</td>
-                <td>{c.currentStep ? <>{c.currentStep.id}. {c.currentStep.title} <span className={`chip ${c.currentStep.status}`}>{STATUS_LABEL[c.currentStep.status]}</span></> : <span className="chip completed">All steps complete</span>}</td>
+                <td>{c.currentStep ? <>{c.currentStep.id}. {c.currentStep.title} <span className={`chip ${c.currentStep.status}`}>{STATUS_LABEL[c.currentStep.status]}</span></> : <span className="chip completed">{c.stepLimit ? `Complete (steps 1 to ${c.stepLimit})` : 'All steps complete'}</span>}</td>
                 <td>{c.waitingOn.map((o) => <span key={o} className={`tag ${o === me ? 'me' : ''}`}>{OWNER_LABEL[o]}</span>)}</td>
               </tr>
             ))}
@@ -137,16 +135,40 @@ export function ClaimList() {
   );
 }
 
+const blankAddress = () => ({ line1: '', line2: '', suburb: '', state: '', postcode: '' });
+const blankClaimant = () => ({ name: '', relationship: '', email: '', phone: '', address: blankAddress() });
+
+/** Australian address fields: line 1, optional line 2, suburb, state or territory, postcode. */
+function AddressFields({ value, onChange }: { value: ReturnType<typeof blankAddress>; onChange: (a: ReturnType<typeof blankAddress>) => void }) {
+  const set = (k: keyof typeof value, v: string) => onChange({ ...value, [k]: v });
+  return (
+    <>
+      <label>Address line 1<input value={value.line1} onChange={(e) => set('line1', e.target.value)} autoComplete="address-line1" required /></label>
+      <label>Address line 2 (optional)<input value={value.line2} onChange={(e) => set('line2', e.target.value)} autoComplete="address-line2" /></label>
+      <label>Suburb<input value={value.suburb} onChange={(e) => set('suburb', e.target.value)} autoComplete="address-level2" required /></label>
+      <div className="grid2 tight">
+        <label>State or territory
+          <select value={value.state} onChange={(e) => set('state', e.target.value)} autoComplete="address-level1" required>
+            <option value="">Select…</option>
+            {AU_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label>Postcode<input value={value.postcode} onChange={(e) => set('postcode', e.target.value.replace(/\D/g, '').slice(0, 4))} inputMode="numeric" pattern="\d{4}" title="4 digits" autoComplete="postal-code" required /></label>
+      </div>
+    </>
+  );
+}
+
 interface Issued { claim: { claimId: string }; claimants: { claimantId: string; name: string; passcode: string }[] }
 
 export function NewClaim() {
   const me = staffSession()!.party;
   const [deceasedName, setDeceasedName] = useState('');
   const [memberNumber, setMemberNumber] = useState('');
-  const [claimants, setClaimants] = useState([{ name: '', relationship: '', email: '', phone: '' }]);
+  const [claimants, setClaimants] = useState([blankClaimant()]);
   const [error, setError] = useState('');
   const [issued, setIssued] = useState<Issued>();
-  if (me !== 'grow') return <main><p>Only GROW registers claims.</p></main>;
+  if (me === 'tal') return <main><p>Only NGS and GROW register claims.</p></main>;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -168,7 +190,7 @@ export function NewClaim() {
       </main>
     );
   }
-  const set = (i: number, k: string, v: string) => setClaimants(claimants.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
+  const set = (i: number, k: 'name' | 'relationship' | 'email' | 'phone', v: string) => setClaimants(claimants.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
   return (
     <main className="narrow">
       <h1>Register a claim</h1>
@@ -182,13 +204,14 @@ export function NewClaim() {
             <legend>Claimant {i + 1}</legend>
             <label>Full name<input value={c.name} onChange={(e) => set(i, 'name', e.target.value)} required /></label>
             <label>Relationship to the member<input value={c.relationship} onChange={(e) => set(i, 'relationship', e.target.value)} required /></label>
-            <div className="grid2">
+            <div className="grid2 tight">
               <label>Mobile<input value={c.phone} onChange={(e) => set(i, 'phone', e.target.value)} /></label>
               <label>Email<input value={c.email} onChange={(e) => set(i, 'email', e.target.value)} /></label>
             </div>
+            <AddressFields value={c.address} onChange={(a) => setClaimants(claimants.map((x, j) => (j === i ? { ...x, address: a } : x)))} />
           </fieldset>
         ))}
-        {claimants.length < 6 && <button type="button" className="secondary" onClick={() => setClaimants([...claimants, { name: '', relationship: '', email: '', phone: '' }])}>Add another claimant</button>}
+        {claimants.length < 6 && <button type="button" className="secondary" onClick={() => setClaimants([...claimants, blankClaimant()])}>Add another claimant</button>}
         {error && <p className="error" role="alert">{error}</p>}
         <button className="primary">Register claim</button>
       </form>
@@ -217,12 +240,8 @@ export function ClaimDetail() {
     try { set(await api<StaffClaimDetail>(`${base}/steps/${stepId}`, { as: 'staff', body: { action, note } })); }
     catch (e) { setMsg((e as Error).message); }
   }
-  async function reissue(claimantId: string, name: string) {
-    if (!confirm(`Issue a new passcode for ${name}? The old one stops working.`)) return;
-    const r = await api<{ passcode: string }>(`${base}/claimants/${claimantId}/passcode`, { as: 'staff', body: {} });
-    setPasscode({ name, code: r.passcode });
-  }
   const nameOf = (id: string | null) => (id ? data.claimants.find((c) => c.claimantId === id)?.name ?? id : 'Whole claim');
+  const names = Object.fromEntries(data.claimants.map((c) => [c.claimantId, c.name]));
 
   return (
     <main>
@@ -230,7 +249,7 @@ export function ClaimDetail() {
       <div className="row between wrap">
         <div><h1>{data.claim.claimId}</h1><p className="muted">Member: {data.claim.deceasedName}{data.claim.memberNumber && ` · #${data.claim.memberNumber}`} · registered {fmtDateTime(data.claim.createdAt)}</p></div>
         <div className="clock" aria-live="off">
-          <span className="muted">{data.closedAt ? 'Total time to complete' : 'Open for'}</span>
+          <span className="muted">{data.closedAt ? (me === 'tal' ? 'Time to complete TAL steps' : 'Total time to complete') : 'Open for'}</span>
           <strong><OpenFor createdAt={data.claim.createdAt} closedAt={data.closedAt} now={now} /></strong>
         </div>
       </div>
@@ -286,31 +305,170 @@ export function ClaimDetail() {
         </table>
       </section>
 
-      <div className="grid2">
-        <section className="card stack">
-          <h2>Claimants</h2>
-          {data.claimants.map((c) => (
-            <div key={c.claimantId} className="row between">
-              <div><strong>{c.name}</strong> <span className="muted">{c.relationship}{c.phone && ` · ${c.phone}`}{c.email && ` · ${c.email}`}</span></div>
-              {me !== 'tal' && <button className="secondary small" onClick={() => reissue(c.claimantId, c.name)}>New passcode</button>}
-            </div>
-          ))}
-          {passcode && <div className="banner">New passcode for {passcode.name}: <code className="big">{passcode.code}</code></div>}
-          {me !== 'tal' && <AddClaimant base={base} onAdded={(n, code) => { setPasscode({ name: n, code }); reload(); }} />}
-        </section>
+      {/* Claimant details and claim specialist requests are for NGS and GROW only. */}
+      {me !== 'tal' && (
+        <div className="grid2">
+          <section className="card stack">
+            <h2>Claimants</h2>
+            <table className="plain">
+              <thead><tr><th>Name</th><th>Relationship</th><th>Percentage</th></tr></thead>
+              <tbody>
+                {data.claimants.map((c) => (
+                  <tr key={c.claimantId}>
+                    <td><Link to={`/staff/claims/${claimId}/claimants/${c.claimantId}`}>{c.name}</Link></td>
+                    <td>{c.relationship}</td>
+                    <td>{c.allocationPercent !== undefined ? `${c.allocationPercent}%` : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="muted">Select a name to see contact details and issue a new passcode. Shares are supplied by the allocation feed, not entered by staff.</p>
+            {passcode && <div className="banner">Passcode for {passcode.name}: <code className="big">{passcode.code}</code> <span className="muted">Shown once.</span></div>}
+            <AddClaimant base={base} onAdded={(n, code) => { setPasscode({ name: n, code }); reload(); }} />
+          </section>
 
-        <section className="card stack">
-          <h2>Claim specialist requests</h2>
-          {data.supportRequests.length === 0 && <p className="muted">None.</p>}
-          {data.supportRequests.map((r) => <RequestRow key={r.requestId} r={r} canEdit={me !== 'tal'} onChange={reload} />)}
-        </section>
-      </div>
+          <section className="card stack">
+            <h2>Claim specialist requests</h2>
+            {data.supportRequests.length === 0 && <p className="muted">None.</p>}
+            {data.supportRequests.map((r) => <RequestRow key={r.requestId} r={r} canEdit onChange={reload} />)}
+          </section>
+        </div>
+      )}
 
       <section className="card">
         <h2>Activity</h2>
         <ul className="audit">
-          {data.audit.map((a, i) => <li key={i}><span className="muted">{fmtDateTime(a.at)}</span> <strong>{a.actor}</strong> {a.action.replace(/_/g, ' ')}{a.detail && <span className="muted"> · {a.detail}</span>}</li>)}
+          {data.audit.map((a, i) => <li key={i}><span className="muted">{fmtDateTime(a.at)}</span> <strong>{actorName(a.actor, names)}</strong> {describeAudit(a, names)}</li>)}
         </ul>
+      </section>
+    </main>
+  );
+}
+
+/** "ngs:ngs.demo" becomes "NGS Super (ngs.demo)". Family members are named when the viewer is allowed to see claimants. */
+function actorName(actor: string, names: Record<string, string>) {
+  const [kind, id = ''] = actor.split(':');
+  if (kind === 'ngs' || kind === 'grow' || kind === 'tal') return `${PARTY_NAME[kind]} (${id})`;
+  if (kind === 'family') return names[id] ? `Family (${names[id]})` : 'Family';
+  if (kind === 'greenid') return 'GreenID';
+  return kind === 'system' ? 'Automated check' : actor;
+}
+
+const ACTION_TEXT: Record<string, string> = {
+  claim_registered: 'registered the claim',
+  claimant_added: 'added a claimant',
+  passcode_reissued: 'issued a new passcode',
+  family_signed_in: 'signed in',
+  step_done: 'marked a step done',
+  step_reopen: 'reopened a step',
+  step_block: 'flagged a problem on a step',
+  document_uploaded: 'uploaded a document',
+  document_replaced: 'replaced a document',
+  document_downloaded: 'downloaded a document',
+  duplicate_blocked: 'tried to upload a file that was already uploaded',
+  sent_to_greenid: 'sent documents to GreenID',
+  document_verified: 'verified a document',
+  document_failed: 'could not verify a document',
+  claim_specialist_requested: 'asked for a call from a claim specialist',
+  claimant_updated: 'updated claimant details',
+  claim_specialist_request_edited: 'changed the details of their claim specialist request',
+  claim_specialist_request_cancelled: 'cancelled their claim specialist request',
+};
+
+function describeAudit(a: StaffClaimDetail['audit'][number], names: Record<string, string>) {
+  const d = a.detail ?? '';
+  if (a.action === 'claim_specialist_request_updated') {
+    const [who, status] = d.split(': ');
+    const text = status === 'contacted' ? `marked the claim specialist call to ${who} as contacted` : status === 'closed' ? `closed the claim specialist request from ${who}` : `reopened the claim specialist request from ${who}`;
+    return <>{text}</>;
+  }
+  if (a.action === 'passcode_reissued') return <>issued a new passcode for {names[d] ?? d}</>;
+  if (a.action === 'claim_specialist_requested' || a.action.startsWith('claim_specialist_request_')) return <>{ACTION_TEXT[a.action]}</>;
+  if (a.action === 'claimant_updated') {
+    const [who, fields] = d.split(': ');
+    return <>updated the details of {who} <span className="muted">({fields})</span></>;
+  }
+  return <>{ACTION_TEXT[a.action] ?? a.action.replace(/_/g, ' ')}{d && <span className="muted"> · {d}</span>}</>;
+}
+
+/** Edit form for a claimant's name, relationship, contact details and address. The share of payment is not editable. */
+function ClaimantEditor({ base, c, onSaved, onCancel }: { base: string; c: StaffClaimDetail['claimants'][number]; onSaved: () => void; onCancel: () => void }) {
+  const [name, setName] = useState(c.name);
+  const [relationship, setRelationship] = useState(c.relationship);
+  const [phone, setPhone] = useState(c.phone ?? '');
+  const [email, setEmail] = useState(c.email ?? '');
+  const [address, setAddress] = useState<ReturnType<typeof blankAddress>>({ line1: c.address?.line1 ?? '', line2: c.address?.line2 ?? '', suburb: c.address?.suburb ?? '', state: c.address?.state ?? '', postcode: c.address?.postcode ?? '' });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError('');
+    try { await api(base, { as: 'staff', body: { name, relationship, phone, email, address } }); onSaved(); }
+    catch (err) { setError((err as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <form className="stack" onSubmit={save}>
+      <label>Full name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
+      <label>Relationship to the member<input value={relationship} onChange={(e) => setRelationship(e.target.value)} required /></label>
+      <div className="grid2 tight">
+        <label>Mobile<input value={phone} onChange={(e) => setPhone(e.target.value)} /></label>
+        <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+      </div>
+      <AddressFields value={address} onChange={setAddress} />
+      {error && <p className="error" role="alert">{error}</p>}
+      <div className="row"><button className="primary small" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button><button type="button" className="link" onClick={onCancel}>Cancel</button></div>
+    </form>
+  );
+}
+
+/** Contact details and sign-in passcode for one claimant. Passcodes are stored hashed, so a new one is issued, not looked up. */
+export function ClaimantProfile() {
+  const { claimId = '', claimantId = '' } = useParams();
+  const me = staffSession()!.party;
+  const { data, error, reload } = useLoad(() => api<StaffClaimDetail>(`/staff/claims/${claimId}`, { as: 'staff' }), [claimId]);
+  const [issued, setIssued] = useState<string>();
+  const [msg, setMsg] = useState('');
+  const [editing, setEditing] = useState(false);
+  if (me === 'tal') return <main><p>Claimant details are available to NGS and GROW only.</p></main>;
+  if (error) return <main><p className="error">{error}</p></main>;
+  if (!data) return <main><p>Loading…</p></main>;
+  const c = data.claimants.find((x) => x.claimantId === claimantId);
+  if (!c) return <main><p>Claimant not found.</p><Link to={`/staff/claims/${claimId}`}>← Back to the claim</Link></main>;
+  async function reissue() {
+    if (!confirm(`Issue a new passcode for ${c!.name}? The old one stops working.`)) return;
+    setMsg('');
+    try {
+      const r = await api<{ passcode: string }>(`/staff/claims/${claimId}/claimants/${claimantId}/passcode`, { as: 'staff', body: {} });
+      setIssued(r.passcode);
+    } catch (e) { setMsg((e as Error).message); }
+  }
+  const a = c.address;
+  return (
+    <main className="narrow">
+      <p><Link to={`/staff/claims/${claimId}`}>← {claimId}</Link></p>
+      <h1>{c.name}</h1>
+      <p className="muted">{c.relationship} of {data.claim.deceasedName}</p>
+      <section className="card stack">
+        <div className="row between"><h2>Details</h2>{!editing && <button className="secondary small" onClick={() => setEditing(true)}>Edit details</button>}</div>
+        {editing ? (
+          <ClaimantEditor base={`/staff/claims/${claimId}/claimants/${claimantId}`} c={c} onCancel={() => setEditing(false)} onSaved={() => { setEditing(false); reload(); }} />
+        ) : (
+          <dl className="facts">
+            <dt>Share of payment</dt><dd>{c.allocationPercent !== undefined ? `${c.allocationPercent}%` : '–'} <span className="muted">Set by the allocation feed</span></dd>
+            <dt>Mobile</dt><dd>{c.phone ? <a href={`tel:${c.phone}`}>{c.phone}</a> : '–'}</dd>
+            <dt>Email</dt><dd>{c.email ? <a href={`mailto:${c.email}`}>{c.email}</a> : '–'}</dd>
+            <dt>Address</dt>
+            <dd>{a ? <>{a.line1}<br />{a.line2 && <>{a.line2}<br /></>}{a.suburb} {a.state} {a.postcode}</> : '–'}</dd>
+          </dl>
+        )}
+      </section>
+      <section className="card stack">
+        <h2>Sign-in passcode</h2>
+        <p className="muted">The current passcode expires {fmtDate(c.passcodeExpiresAt)}. Passcodes are stored securely and cannot be shown again. If the family has lost theirs, issue a new one and read it out on the call. The old one stops working.</p>
+        {issued && <div className="banner">New passcode: <code className="big">{issued}</code> <span className="muted">Shown once. Claim ID {claimId}.</span></div>}
+        {msg && <p className="error" role="alert">{msg}</p>}
+        <div><button className="primary" onClick={reissue}>Issue new passcode</button></div>
       </section>
     </main>
   );
@@ -321,17 +479,19 @@ function StaffDocRow({ base, item, forName, onChange }: { base: string; item: St
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const d = item.doc;
+  const [variant, setVariant] = useState(d?.variant ?? '');
   async function pick(file?: File) {
     if (!file) return;
     setBusy(true); setError('');
-    try { await uploadDocument(base, 'staff', { slot: item.slot, claimantId: item.claimantId, file }); onChange(); }
+    try { await uploadDocument(base, 'staff', { slot: item.slot, variant: item.choices ? variant : undefined, claimantId: item.claimantId, file }); onChange(); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); if (input.current) input.current.value = ''; }
   }
   const has = d && d.status === 'uploaded';
   return (
     <tr>
-      <td>{item.label}{item.optional && <span className="muted"> (optional)</span>}</td>
+      <td>{item.label}{item.optional && <span className="muted"> (optional)</span>}
+        {has && d.variant && <div className="muted">{CHOICE_LABELS[d.variant] ?? d.variant}</div>}</td>
       <td>{forName}</td>
       <td>{has ? <><button className="link" onClick={() => openDocument(base, 'staff', d.docId)}>{d.fileName}</button><div className="muted">v{d.version} · {d.uploadedBy} · {fmtDateTime(d.uploadedAt)}</div></> : <span className="muted">Not received</span>}
         {has && d.classification?.mismatch && <div className="note">Looks like a different document type. Please check.</div>}
@@ -339,7 +499,13 @@ function StaffDocRow({ base, item, forName, onChange }: { base: string; item: St
       <td>{has ? <><span className={`chip ${d.verification === 'verified' ? 'completed' : d.verification === 'failed' ? 'blocked' : 'in_progress'}`}>{d.verification === 'not_started' ? 'Waiting for the full set' : d.verification === 'pending' ? 'With GreenID' : d.verification}</span>{d.verificationRef && <div className="muted">{d.verificationRef}</div>}</> : ''}</td>
       <td>
         <input ref={input} type="file" hidden accept="application/pdf,image/jpeg,image/png" onChange={(e) => pick(e.target.files?.[0])} />
-        <button className="secondary small" disabled={busy} onClick={() => input.current?.click()}>{busy ? 'Uploading…' : has ? 'Replace' : 'Upload'}</button>
+        {item.choices && (
+          <select value={variant} onChange={(e) => { setVariant(e.target.value); setError(''); }} aria-label={`Type for ${item.label}`} className="typesel">
+            <option value="">Choose type…</option>
+            {item.choices.map((c) => <option key={c} value={c}>{CHOICE_LABELS[c] ?? c}</option>)}
+          </select>
+        )}
+        <button className="secondary small" disabled={busy} onClick={() => { if (item.choices && !variant) return setError('Choose the document type first'); input.current?.click(); }}>{busy ? 'Uploading…' : has ? 'Replace' : 'Upload'}</button>
       </td>
     </tr>
   );
@@ -349,12 +515,13 @@ function AddClaimant({ base, onAdded }: { base: string; onAdded: (name: string, 
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [relationship, setRelationship] = useState('');
+  const [address, setAddress] = useState(blankAddress());
   const [error, setError] = useState('');
   async function submit(e: FormEvent) {
     e.preventDefault();
     try {
-      const r = await api<{ name: string; passcode: string }>(`${base}/claimants`, { as: 'staff', body: { name, relationship } });
-      onAdded(r.name, r.passcode); setOpen(false); setName(''); setRelationship('');
+      const r = await api<{ name: string; passcode: string }>(`${base}/claimants`, { as: 'staff', body: { name, relationship, address } });
+      onAdded(r.name, r.passcode); setOpen(false); setName(''); setRelationship(''); setAddress(blankAddress());
     } catch (err) { setError((err as Error).message); }
   }
   if (!open) return <button className="secondary" onClick={() => setOpen(true)}>Add claimant</button>;
@@ -362,6 +529,7 @@ function AddClaimant({ base, onAdded }: { base: string; onAdded: (name: string, 
     <form className="stack" onSubmit={submit}>
       <label>Full name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
       <label>Relationship<input value={relationship} onChange={(e) => setRelationship(e.target.value)} required /></label>
+      <AddressFields value={address} onChange={setAddress} />
       {error && <p className="error">{error}</p>}
       <div className="row"><button className="primary small">Add</button><button type="button" className="link" onClick={() => setOpen(false)}>Cancel</button></div>
     </form>
@@ -370,15 +538,21 @@ function AddClaimant({ base, onAdded }: { base: string; onAdded: (name: string, 
 
 function RequestRow({ r, canEdit, onChange }: { r: SupportRequest; canEdit: boolean; onChange: () => void }) {
   const update = async (status: string) => { await api(`/staff/claims/${r.claimId}/requests/${r.requestId}`, { as: 'staff', body: { status } }); onChange(); };
+  const [who] = (r.contactedBy ?? '').split(':');
+  const contactedParty = who === 'ngs' || who === 'grow' || who === 'tal' ? PARTY_NAME[who] : undefined;
   return (
     <div className="request">
-      <div className="row between"><strong>{r.claimantName}</strong><span className={`chip ${r.status === 'open' ? 'blocked' : r.status === 'contacted' ? 'in_progress' : 'completed'}`}>{r.status}</span></div>
-      <p>{r.phone}{r.preferredTime && ` · ${r.preferredTime}`}</p>
+      <div className="row between"><strong>{r.claimantName}</strong><span className={`chip ${r.status === 'open' ? 'blocked' : r.status === 'contacted' ? 'in_progress' : r.status === 'closed' ? 'completed' : ''}`}>{r.status === 'cancelled' ? 'cancelled by family' : r.status}</span></div>
+      <p><a href={`tel:${r.phone.replace(/[^\d+]/g, '')}`}>{r.phone}</a>{r.preferredTime && ` · ${r.preferredTime}`}</p>
       {r.topic && <p className="muted">{r.topic}</p>}
       <p className="muted">Requested {fmtDateTime(r.createdAt)}</p>
-      {canEdit && r.status !== 'closed' && (
-        <div className="row">
-          {r.status === 'open' && <button className="secondary small" onClick={() => update('contacted')}>Mark contacted</button>}
+      {r.editedAt && <p className="muted">Details updated by the family on {fmtDateTime(r.editedAt)}</p>}
+      {r.cancelledAt && <p className="muted">Cancelled by the family on {fmtDateTime(r.cancelledAt)}</p>}
+      {r.contactedAt && <p className="muted">Called by <strong>{contactedParty ?? r.contactedBy}</strong> on {fmtDateTime(r.contactedAt)}</p>}
+      {canEdit && r.status !== 'closed' && r.status !== 'cancelled' && (
+        <div className="row wrap">
+          <a className="button secondary small" href={`tel:${r.phone.replace(/[^\d+]/g, '')}`}>Call {r.phone}</a>
+          {r.status === 'open' && <button className="primary small" onClick={() => update('contacted')}>Mark contacted</button>}
           <button className="secondary small" onClick={() => update('closed')}>Close</button>
         </div>
       )}
@@ -387,6 +561,12 @@ function RequestRow({ r, canEdit, onChange }: { r: SupportRequest; canEdit: bool
 }
 
 export function Requests() {
+  // TAL does not see claim specialist requests.
+  if (staffSession()!.party === 'tal') return <Navigate to="/staff" replace />;
+  return <RequestsList />;
+}
+
+function RequestsList() {
   const me = staffSession()!.party;
   const { data, error, reload } = useLoad(() => api<SupportRequest[]>('/staff/requests', { as: 'staff' }), [], 15000);
   if (error) return <main><p className="error">{error}</p></main>;

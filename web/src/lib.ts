@@ -54,11 +54,11 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
 }
 
 /** Uploads through a presigned URL, then asks the API to verify and file the document. */
-export async function uploadDocument(base: string, as: 'family' | 'staff', input: { slot: string; claimantId?: string | null; file: File }) {
+export async function uploadDocument(base: string, as: 'family' | 'staff', input: { slot: string; variant?: string; claimantId?: string | null; file: File }) {
   const { file } = input;
   const init = await api<{ docId: string; uploadUrl: string; headers: Record<string, string> }>(`${base}/documents`, {
     as,
-    body: { slot: input.slot, claimantId: input.claimantId ?? undefined, fileName: file.name, contentType: file.type, size: file.size },
+    body: { slot: input.slot, variant: input.variant, claimantId: input.claimantId ?? undefined, fileName: file.name, contentType: file.type, size: file.size },
   });
   const put = await fetch(init.uploadUrl, { method: 'PUT', headers: init.headers, body: file });
   if (!put.ok) throw new ApiError(0, 'The upload did not complete. Please try again.', 'upload_incomplete');

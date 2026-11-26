@@ -31,9 +31,14 @@ export const STEPS: StepDef[] = [
   { id: 4, title: 'Documents verified', familyTitle: 'We verify your documents', familyDescription: 'Your documents are checked with our identity verification partner, GreenID.', slaDays: 1, owners: ['system'] },
   { id: 5, title: 'Assess and coordinate', familyTitle: 'We assess your claim', familyDescription: 'NGS Super, TAL and GROW review your claim together. You do not need to contact each of them.', slaDays: 10, owners: ['tal', 'ngs', 'grow'] },
   { id: 6, title: 'Insurer decision', familyTitle: 'Insurer decision', familyDescription: 'TAL, the insurer, decides whether the insurance part of your claim is accepted.', slaDays: 5, owners: ['tal'] },
-  { id: 7, title: 'Trustee decision', familyTitle: 'Trustee decision', familyDescription: 'The trustee decides eligibility and who receives the benefit.', slaDays: 10, owners: ['ngs'] },
-  { id: 8, title: 'Communicate outcome and pay', familyTitle: 'Outcome and payment', familyDescription: 'We explain the outcome and arrange payment.', slaDays: 5, owners: ['grow', 'tal'] },
+  { id: 7, title: 'TAL payment', familyTitle: 'Insurance payment', familyDescription: 'TAL pays the insurance part of your claim.', slaDays: 5, owners: ['tal'] },
+  { id: 8, title: 'Trustee decision', familyTitle: 'Trustee decision', familyDescription: 'The trustee decides eligibility and who receives the benefit.', slaDays: 10, owners: ['ngs'] },
+  { id: 9, title: 'Payment and Communication', familyTitle: 'Outcome and payment', familyDescription: 'We explain the outcome and arrange payment.', slaDays: 5, owners: ['grow'] },
 ];
+
+/** The last step a party can see. A party without an entry sees every step. TAL's view ends at its own payment. */
+export const STEP_VIEW_LIMIT: Partial<Record<Party, number>> = { tal: 7 };
+export const canSeeStep = (party: Party, stepId: number) => stepId <= (STEP_VIEW_LIMIT[party] ?? Infinity);
 
 export type OwnerStatus = 'pending' | 'done' | 'blocked';
 export interface OwnerState {
@@ -87,18 +92,39 @@ export interface ChecklistItem {
   description: string;
   scope: DocScope; // claim = shared by all claimants, claimant = one per claimant
   optional?: boolean;
+  /** The customer picks exactly one of these before uploading, and only one file is needed. */
+  choices?: string[];
+  /** Staff parties allowed to see and download this document. Omitted means every party. */
+  staffAccess?: Party[];
 }
 
-/** Fixed list for the prototype. Keyed by claim type so it can vary later. */
+const ID_CHOICES = ['passport', 'medicare', 'drivers_licence'];
+const NGS_GROW: Party[] = ['ngs', 'grow'];
+
+/** Fixed list for the prototype. Keyed by claim type so it can vary later. TAL sees only the death certificate and the deceased's ID. */
 export const CHECKLISTS: Record<string, ChecklistItem[]> = {
   death_benefit: [
     { slot: 'death_certificate', label: 'Death certificate', description: 'Certified copy of the death certificate.', scope: 'claim' },
-    { slot: 'will', label: 'Will or grant of probate', description: 'If there is one. Skip if not applicable.', scope: 'claim', optional: true },
-    { slot: 'claimant_id', label: 'Photo ID', description: 'Driver licence or passport.', scope: 'claimant' },
-    { slot: 'relationship_proof', label: 'Proof of relationship', description: 'For example a marriage or birth certificate.', scope: 'claimant' },
+    { slot: 'deceased_id', label: 'Proof of ID for the deceased', description: 'Choose one: passport, Medicare card or driver licence.', scope: 'claim', choices: ID_CHOICES },
+    { slot: 'claimant_id', label: 'Proof of ID for the claimant', description: 'Choose one: passport, Medicare card or driver licence.', scope: 'claimant', choices: ID_CHOICES, staffAccess: NGS_GROW },
+    { slot: 'death_claim_form', label: 'Death claim form', description: 'The completed and signed death claim form.', scope: 'claimant', staffAccess: NGS_GROW },
+    { slot: 'bank_statement', label: 'Bank statement', description: 'A recent statement for the account the benefit should be paid into.', scope: 'claimant', staffAccess: NGS_GROW },
+    { slot: 'probate', label: 'Probate or letter of administration', description: 'Optional. Choose which one you have.', scope: 'claim', optional: true, choices: ['probate', 'letter_of_administration'], staffAccess: NGS_GROW },
+    { slot: 'will', label: 'Copy of the will', description: 'Optional.', scope: 'claim', optional: true, staffAccess: NGS_GROW },
+    { slot: 'court_order', label: 'Copy of a court order', description: 'Optional.', scope: 'claim', optional: true, staffAccess: NGS_GROW },
   ],
 };
 export const DEFAULT_CLAIM_TYPE = 'death_benefit';
+
+export const CHOICE_LABELS: Record<string, string> = {
+  passport: 'Passport',
+  medicare: 'Medicare card',
+  drivers_licence: 'Driver licence',
+  probate: 'Probate',
+  letter_of_administration: 'Letter of administration',
+};
+
+export const canStaffAccess = (party: Party, item: Pick<ChecklistItem, 'staffAccess'>) => !item.staffAccess || item.staffAccess.includes(party);
 
 export type DocVerification = 'not_started' | 'pending' | 'verified' | 'failed';
 export interface DocRecord {
@@ -110,6 +136,7 @@ export interface DocRecord {
   contentType: string;
   size: number;
   sha256?: string;
+  variant?: string; // the type the customer chose, for slots with choices
   version: number;
   status: 'awaiting_upload' | 'uploaded';
   uploadedBy?: string; // e.g. "family:C-AB12" or "tal:jane"
@@ -119,7 +146,7 @@ export interface DocRecord {
   verificationNote?: string;
   classification?: { detectedSlot: string; confidence: number; source: string; mismatch: boolean };
   s3Key?: string; // current version's object key
-  pending?: { fileName: string; contentType: string; size: number; key: string };
+  pending?: { fileName: string; contentType: string; size: number; key: string; variant?: string };
 }
 
 // ---------- Claims ----------
@@ -132,10 +159,23 @@ export interface Claim {
   createdAt: string;
   createdBy: string;
 }
+export const AU_STATES = ['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA'] as const;
+export type AuState = (typeof AU_STATES)[number];
+/** Australian postal address. */
+export interface Address {
+  line1: string;
+  line2?: string;
+  suburb: string;
+  state: AuState;
+  postcode: string; // four digits
+}
+
 export interface Claimant {
   claimantId: string;
   claimId: string;
   name: string;
+  address?: Address; // required when registering, optional here so older records still load
+  allocationPercent?: number; // share of the benefit, supplied by an external party. Never typed in by staff.
   relationship: string;
   email?: string;
   phone?: string;
@@ -149,8 +189,12 @@ export interface SupportRequest {
   phone: string;
   preferredTime: string;
   topic: string;
-  status: 'open' | 'contacted' | 'closed';
+  status: 'open' | 'contacted' | 'closed' | 'cancelled'; // cancelled = withdrawn by the family
   createdAt: string;
+  editedAt?: string; // the family changed the details after sending it
+  cancelledAt?: string;
+  contactedBy?: string; // e.g. "ngs:ngs.demo", set when someone marks the call as made
+  contactedAt?: string;
   updatedBy?: string;
 }
 export interface AuditEntry {
@@ -182,13 +226,14 @@ export interface ChecklistView extends ChecklistItem {
     fileName: string;
     uploadedAt?: string;
     uploadedByYou: boolean;
+    variant?: string;
     verification: DocVerification;
     verificationNote?: string;
     needsReview: boolean;
   };
 }
 export interface FamilyTracker {
-  claim: { claimId: string; deceasedName: string; registeredAt: string };
+  claim: { claimId: string; deceasedName: string; memberNumber?: string; registeredAt: string };
   claimant: { claimantId: string; name: string };
   steps: FamilyStepView[];
   checklist: ChecklistView[];
@@ -203,7 +248,8 @@ export interface ClaimSummary {
   // null when all steps are complete. startedAt is when the step became available (the previous step completed).
   currentStep: { id: number; title: string; status: StepStatus; startedAt: string; slaDays: number } | null;
   waitingOn: Owner[];
-  closedAt?: string; // set when every step is complete
+  closedAt?: string; // set when every step this party can see is complete
+  stepLimit?: number; // set when this party only sees steps up to this number
   docsReceived: number;
   docsRequired: number;
 }

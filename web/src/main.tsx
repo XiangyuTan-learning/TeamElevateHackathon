@@ -4,7 +4,7 @@ import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { FamilyClaim, FamilyLogin } from './family';
 import { I18nProvider, LangRoot, LangSwitch, useI18n } from './i18n';
 import { loadConfig } from './lib';
-import { ClaimDetail, ClaimList, NewClaim, Requests, StaffLogin, StaffShell } from './staff';
+import { ClaimantProfile, ClaimDetail, ClaimList, NewClaim, Requests, StaffLogin, StaffShell } from './staff';
 import './styles.css';
 
 function Landing() {
@@ -39,6 +39,7 @@ void loadConfig().then(() =>
           <Route path="new" element={<NewClaim />} />
           <Route path="requests" element={<Requests />} />
           <Route path="claims/:claimId" element={<ClaimDetail />} />
+          <Route path="claims/:claimId/claimants/:claimantId" element={<ClaimantProfile />} />
         </Route>
       </Routes>
     </BrowserRouter>

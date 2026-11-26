@@ -105,8 +105,35 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align
 .sstep.locked { opacity: 0.7; }
 .clock { text-align: right; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 16px; display: flex; flex-direction: column; }
 .clock strong { font-size: 1.4rem; color: var(--accent); }
-td.sla-breach { background: #fde4e1; color: #8a1c12; font-weight: 600; }
-td.sla-breach input:disabled { accent-color: #b42318; }
+.tag.breach { background: #9a3412; color: #fff; }
+.topbar.branded { padding-bottom: 12px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+.logo { height: 44px; width: auto; display: block; }
+.grid2.tight { margin: 0; }
+.request.cancelled { opacity: 0.65; }
+.request p { margin: 4px 0; }
+/* Borderless columns, used for the claimants list */
+table.plain th, table.plain td { border: 0; padding: 6px 16px 6px 0; }
+table.plain th { padding-bottom: 2px; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; margin: 0; }
+.facts dt { color: var(--muted); font-size: 0.92rem; }
+.facts dd { margin: 0; }
+label select { font: inherit; padding: 10px 12px; border: 1px solid #b8c8c5; border-radius: 8px; background: #fff; font-weight: 400; }
+
+/* Family claim header: greeting on the left, sign out and member details on the right */
+.hero { display: grid; grid-template-columns: 1fr minmax(240px, 34%); gap: 24px; align-items: stretch; margin-bottom: 8px; }
+.heroleft { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.heroright { display: flex; flex-direction: column; align-items: flex-end; }
+.memberpanel { flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 8px 0; }
+.memberpanel .late { font-size: 1.5rem; line-height: 1.25; }
+.memberpanel .memberno { font-size: 1.15rem; color: var(--muted); }
+@media (max-width: 700px) { .hero { grid-template-columns: 1fr; } .heroright { align-items: stretch; } }
+.typepick select { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid #b8c8c5; background: #fff; margin-top: 4px; }
+.typesel { font: inherit; font-size: 0.85rem; padding: 4px 6px; border-radius: 6px; border: 1px solid #b8c8c5; margin-right: 6px; }
+.privacy { font-size: 0.95rem; }
+.privacy h3 { font-size: 1rem; margin: 1em 0 0.3em; }
+.privacy ul { margin: 0.3em 0 0.8em; padding-inline-start: 1.4em; }
+.privacy .consent { align-items: flex-start; font-weight: 500; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.privacy .consent input { margin-top: 4px; }
 .timer { font-variant-numeric: tabular-nums; font-size: 0.9rem; font-weight: 600; color: var(--ink); }
 .timer.closed { color: #2c5a07; }
 .owners { display: flex; gap: 8px; flex-wrap: wrap; }

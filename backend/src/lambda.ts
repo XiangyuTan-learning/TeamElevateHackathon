@@ -31,7 +31,7 @@ export const service = new Service({
   blob: new S3Blob(env('BUCKET_NAME')),
   classifier: process.env.BEDROCK_MODEL_ID ? new BedrockClassifier(process.env.BEDROCK_MODEL_ID) : new FilenameClassifier(),
   greenId: new MockGreenId(),
-  counsellingUrl: process.env.COUNSELLING_URL ?? 'https://example.com/member-counselling',
+  counsellingUrl: process.env.COUNSELLING_URL ?? 'https://www.tal.com.au/claims/health-support/grief-support',
   startVerification: async (claimId) => {
     await sfn.send(new StartExecutionCommand({ stateMachineArn: env('STATE_MACHINE_ARN'), input: JSON.stringify({ claimId }) }));
   },

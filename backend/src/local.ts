@@ -21,7 +21,7 @@ const service: Service = new Service({
   blob,
   classifier: process.env.BEDROCK_MODEL_ID ? new BedrockClassifier(process.env.BEDROCK_MODEL_ID) : new FilenameClassifier(),
   greenId: new MockGreenId(),
-  counsellingUrl: 'https://example.com/member-counselling',
+  counsellingUrl: 'https://www.tal.com.au/claims/health-support/grief-support',
   startVerification: async (claimId) => {
     setTimeout(() => service.verifyClaim(claimId).catch(console.error), 3000); // stands in for the Step Functions workflow
   },

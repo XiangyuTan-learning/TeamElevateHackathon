@@ -3,13 +3,19 @@ import { createHash } from 'node:crypto';
 import {
   ALLOWED_CONTENT_TYPES,
   CHECKLISTS,
+  AU_STATES,
+  canSeeStep,
+  canStaffAccess,
+  STEP_VIEW_LIMIT,
   DEFAULT_CLAIM_TYPE,
   MAX_UPLOAD_BYTES,
   OWNER_LABEL,
   STEPS,
   deriveSteps,
   emptyStepState,
+  type Address,
   type AuditEntry,
+  type AuState,
   type Claim,
   type ChecklistItem,
   type ChecklistView,
@@ -24,6 +30,7 @@ import {
   type StepState,
   type SupportRequest,
 } from '@claims/shared';
+import { MockBenefitAllocator, type BenefitAllocator } from './allocation';
 import type { Principal } from './auth';
 import type { Blob } from './blob';
 import type { Classifier } from './classifier';
@@ -31,6 +38,10 @@ import type { GreenId } from './greenid';
 import type { ClaimantSecret, Repo } from './repo';
 
 /** `code` and `params` let the family portal show the message in the family's language. */
+const ID_SLOTS = ['deceased_id', 'claimant_id'];
+/** Proof of ID for the deceased and for the claimant look the same to a classifier. */
+const sameKind = (a: string, b: string) => a === b || (ID_SLOTS.includes(a) && ID_SLOTS.includes(b));
+
 export class HttpError extends Error {
   constructor(public status: number, message: string, public code?: string, public params?: Record<string, string>) {
     super(message);
@@ -46,6 +57,7 @@ export interface Deps {
   classifier: Classifier;
   greenId: GreenId;
   startVerification: (claimId: string) => Promise<void>;
+  allocator?: BenefitAllocator;
   counsellingUrl: string;
   now?: () => Date;
 }
@@ -67,8 +79,17 @@ const text = (v: unknown, field: string, max: number, required = true): string =
 
 export class Service {
   private repo: Repo;
+  private allocator: BenefitAllocator;
   constructor(private d: Deps) {
     this.repo = d.repo;
+    this.allocator = d.allocator ?? new MockBenefitAllocator();
+  }
+
+  /** Asks the external allocation feed for each claimant's share and stores it. */
+  private async allocate(claimId: string) {
+    const claimants = await this.repo.listClaimants(claimId);
+    const shares = await this.allocator.allocate(claimants.map((c) => ({ claimantId: c.claimantId, relationship: c.relationship })));
+    for (const c of claimants) await this.repo.putClaimant({ ...c, allocationPercent: shares[c.claimantId] });
   }
   private now = () => (this.d.now ? this.d.now() : new Date());
   private iso = () => this.now().toISOString();
@@ -88,7 +109,22 @@ export class Service {
 
   // ---------- Claims and claimants ----------
 
-  private async newClaimant(claimId: string, index: number, input: { name: unknown; relationship: unknown; email?: unknown; phone?: unknown }) {
+  private parseAddress(v: unknown): Address {
+    const a = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+    const state = typeof a.state === 'string' ? a.state.trim().toUpperCase() : '';
+    if (!(AU_STATES as readonly string[]).includes(state)) throw new HttpError(400, 'Choose a state or territory for the address');
+    const postcode = typeof a.postcode === 'string' ? a.postcode.trim() : '';
+    if (!/^\d{4}$/.test(postcode)) throw new HttpError(400, 'Postcode must be 4 digits');
+    return {
+      line1: text(a.line1, 'Address line 1', 100),
+      line2: text(a.line2, 'Address line 2', 100, false) || undefined,
+      suburb: text(a.suburb, 'Suburb', 60),
+      state: state as AuState,
+      postcode,
+    };
+  }
+
+  private async newClaimant(claimId: string, index: number, input: { name: unknown; relationship: unknown; email?: unknown; phone?: unknown; address?: unknown }) {
     const passcode = `${randomString(4)}-${randomString(4)}`;
     const salt = randomBytes(16).toString('hex');
     const c: ClaimantSecret = {
@@ -96,6 +132,7 @@ export class Service {
       claimId,
       name: text(input.name, 'Claimant name', 100),
       relationship: text(input.relationship, 'Relationship', 100),
+      address: this.parseAddress(input.address),
       email: text(input.email, 'Email', 200, false) || undefined,
       phone: text(input.phone, 'Phone', 40, false) || undefined,
       salt,
@@ -106,9 +143,9 @@ export class Service {
     return { claimantId: c.claimantId, name: c.name, passcode };
   }
 
-  /** Called by a GROW (Concentrix) agent once identity and cover are confirmed on the call. */
+  /** Called by a GROW (Concentrix) agent, or by NGS, once identity and cover are confirmed on the call. */
   async createClaim(actor: Staff, input: { deceasedName?: unknown; memberNumber?: unknown; claimants?: unknown }) {
-    if (actor.party !== 'grow') throw new HttpError(403, 'Only GROW can register claims');
+    if (actor.party === 'tal') throw new HttpError(403, 'Only NGS or GROW can register claims');
     const claimants = Array.isArray(input.claimants) ? input.claimants : [];
     if (claimants.length < 1 || claimants.length > 6) throw new HttpError(400, 'Add between 1 and 6 claimants');
     const now = this.iso();
@@ -131,19 +168,46 @@ export class Service {
     }
     const issued = [];
     for (const [i, c] of claimants.entries()) issued.push(await this.newClaimant(claim.claimId, i + 1, c as never));
+    await this.allocate(claim.claimId);
     await this.audit(claim.claimId, this.who(actor), 'claim_registered', `${issued.length} claimant(s)`);
     return { claim, claimants: issued };
   }
 
-  async addClaimant(actor: Staff, claimId: string, input: { name?: unknown; relationship?: unknown; email?: unknown; phone?: unknown }) {
+  async addClaimant(actor: Staff, claimId: string, input: { name?: unknown; relationship?: unknown; email?: unknown; phone?: unknown; address?: unknown }) {
     if (actor.party === 'tal') throw new HttpError(403, 'Only NGS or GROW can add claimants');
     await this.mustClaim(claimId);
     const existing = await this.repo.listClaimants(claimId);
     const next = Math.max(0, ...existing.map((c) => Number(c.claimantId.slice(1)))) + 1;
     const issued = await this.newClaimant(claimId, next, input as never);
-    await this.audit(claimId, this.who(actor), 'claimant_added', issued.claimantId);
+    await this.allocate(claimId); // the feed re-splits across everyone when someone is added
+    await this.audit(claimId, this.who(actor), 'claimant_added', `${issued.name} (${issued.claimantId})`);
     await this.afterDocChange(claimId);
     return issued;
+  }
+
+  /** NGS and GROW can correct a claimant's details. The share of payment comes from the allocation feed and is not editable. */
+  async updateClaimant(actor: Staff, claimId: string, claimantId: string, input: { name?: unknown; relationship?: unknown; email?: unknown; phone?: unknown; address?: unknown }) {
+    if (actor.party === 'tal') throw new HttpError(403, 'Only NGS or GROW can change claimant details');
+    const c = await this.repo.getClaimant(claimId, claimantId);
+    if (!c) throw new HttpError(404, 'Claimant not found');
+    const next = {
+      name: text(input.name, 'Claimant name', 100),
+      relationship: text(input.relationship, 'Relationship', 100),
+      email: text(input.email, 'Email', 200, false) || undefined,
+      phone: text(input.phone, 'Phone', 40, false) || undefined,
+      address: this.parseAddress(input.address),
+    };
+    const changed = (['name', 'relationship', 'email', 'phone', 'address'] as const).filter((k) => JSON.stringify(c[k] ?? null) !== JSON.stringify(next[k] ?? null));
+    if (changed.length) {
+      await this.repo.putClaimant({ ...c, ...next });
+      if (next.name !== c.name) {
+        // Keep the name on this person's claim specialist requests in step.
+        for (const r of await this.repo.listClaimRequests(claimId)) if (r.claimantId === claimantId) await this.repo.putRequest({ ...r, claimantName: next.name });
+      }
+      await this.audit(claimId, this.who(actor), 'claimant_updated', `${next.name}: ${changed.join(', ')}`);
+    }
+    const { salt: _s, passcodeHash: _h, ...view } = (await this.repo.getClaimant(claimId, claimantId))!;
+    return view;
   }
 
   async reissuePasscode(actor: Staff, claimId: string, claimantId: string) {
@@ -225,6 +289,7 @@ export class Service {
     await this.mustClaim(claimId);
     const def = STEPS.find((s) => s.id === stepId);
     if (!def) throw new HttpError(404, 'Step not found');
+    if (!canSeeStep(actor.party, stepId)) throw new HttpError(404, 'Step not found'); // do not reveal steps beyond this party's view
     if (!def.owners.includes(actor.party)) throw new HttpError(403, `${OWNER_LABEL[actor.party]} does not own this step`);
     const derived = deriveSteps(await this.loadSteps(claimId), claimId);
     const me = derived[stepId - 1]!;
@@ -240,7 +305,7 @@ export class Service {
       if (!note) throw new HttpError(400, 'Add a note explaining what is needed');
       await this.mutateStep(claimId, stepId, actor.party, 'blocked', note, this.who(actor));
     } else throw new HttpError(400, 'Unknown action');
-    await this.audit(claimId, this.who(actor), `step_${action}`, `${def.title}${note ? `: ${note}` : ''}`);
+    await this.audit(claimId, this.who(actor), `step_${action}`, `Step ${def.id}: ${def.title}${note ? ` (${note})` : ''}`);
   }
 
   // ---------- Documents ----------
@@ -260,11 +325,17 @@ export class Service {
     return docs.find((d) => d.slot === slot && d.claimantId === claimantId);
   }
 
-  async initUpload(actor: Principal, claimId: string, input: { slot?: unknown; claimantId?: unknown; fileName?: unknown; contentType?: unknown; size?: unknown }) {
+  async initUpload(actor: Principal, claimId: string, input: { slot?: unknown; variant?: unknown; claimantId?: unknown; fileName?: unknown; contentType?: unknown; size?: unknown }) {
     const claim = await this.mustClaim(claimId);
     this.assertClaimAccess(actor, claimId);
     const item = this.checklist(claim).find((i) => i.slot === input.slot);
     if (!item) throw new HttpError(400, 'Unknown document type');
+    if (actor.kind === 'staff' && !canStaffAccess(actor.party, item)) throw new HttpError(403, 'Your team does not have access to this document');
+    let variant: string | undefined;
+    if (item.choices) {
+      variant = typeof input.variant === 'string' ? input.variant : '';
+      if (!item.choices.includes(variant)) throw new HttpError(400, 'Choose the document type before uploading', 'choose_type');
+    }
     const fileName = text(input.fileName, 'File name', 200);
     const contentType = text(input.contentType, 'Content type', 100);
     const size = Number(input.size);
@@ -290,7 +361,7 @@ export class Service {
       verification: 'not_started',
     };
     const key = `claims/${claimId}/${doc.docId}/v${doc.version + 1}`;
-    doc.pending = { fileName, contentType, size, key };
+    doc.pending = { fileName, contentType, size, key, variant };
     await this.repo.putDoc(doc);
     const { url, headers } = await this.d.blob.presignUpload(key, contentType);
     return { docId: doc.docId, uploadUrl: url, headers, key };
@@ -301,8 +372,8 @@ export class Service {
     this.assertClaimAccess(actor, claimId);
     const doc = await this.repo.getDoc(claimId, docId);
     if (!doc || !doc.pending) throw new HttpError(404, 'No upload in progress for this document');
-    this.assertDocAccess(actor, doc);
-    const { key, fileName, contentType } = doc.pending;
+    this.assertDocAccess(actor, doc, claim);
+    const { key, fileName, contentType, variant } = doc.pending;
     const bytes = await this.d.blob.read(key);
     if (!bytes) throw new HttpError(400, 'The file did not arrive. Please try again.', 'file_missing');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -316,16 +387,17 @@ export class Service {
       if (doc.version === 0) await this.repo.delDoc(claimId, docId);
       else await this.repo.putDoc(doc);
       const label = items.find((i) => i.slot === dup.slot)?.label ?? 'another document';
-      await this.audit(claimId, this.who(actor), 'duplicate_blocked', fileName);
+      await this.audit(claimId, this.who(actor), 'duplicate_blocked', `${doc.slot}: ${fileName}`);
       throw new HttpError(409, `This file has already been uploaded as "${label}". You do not need to upload it again.`, 'duplicate', { slot: dup.slot });
     }
 
     const c = await this.d.classifier.classify({ bytes, contentType, fileName, slots: items });
     doc.classification = {
       ...c,
-      mismatch: c.detectedSlot !== 'unknown' && c.detectedSlot !== doc.slot && c.confidence >= 0.6,
+      mismatch: c.detectedSlot !== 'unknown' && !sameKind(c.detectedSlot, doc.slot) && c.confidence >= 0.6,
     };
     Object.assign(doc, {
+      variant,
       fileName,
       contentType,
       size: bytes.length,
@@ -347,12 +419,12 @@ export class Service {
   }
 
   async downloadUrl(actor: Principal, claimId: string, docId: string) {
-    await this.mustClaim(claimId);
+    const claim = await this.mustClaim(claimId);
     this.assertClaimAccess(actor, claimId);
     const doc = await this.repo.getDoc(claimId, docId);
     if (!doc || !doc.s3Key) throw new HttpError(404, 'Document not found');
-    this.assertDocAccess(actor, doc);
-    await this.audit(claimId, this.who(actor), 'document_downloaded', doc.fileName);
+    this.assertDocAccess(actor, doc, claim);
+    await this.audit(claimId, this.who(actor), 'document_downloaded', `${doc.slot}: ${doc.fileName}`);
     return { url: await this.d.blob.presignDownload(doc.s3Key, doc.fileName), fileName: doc.fileName };
   }
 
@@ -362,7 +434,8 @@ export class Service {
     const claimants = await this.repo.listClaimants(claimId);
     const docs = await this.repo.listDocs(claimId);
     const required = this.requiredEntries(claim, claimants.map((c) => c.claimantId)).filter((e) => !e.item.optional);
-    const complete = required.every((e) => this.slotSatisfied(this.findDoc(docs, e.item.slot, e.claimantId)));
+    // Complete when every required document is in and none (including optional ones) was rejected by GreenID.
+    const complete = required.every((e) => this.slotSatisfied(this.findDoc(docs, e.item.slot, e.claimantId))) && !docs.some((d) => d.verification === 'failed');
     const steps = deriveSteps(await this.loadSteps(claimId), claimId);
     const family = steps[2]!.state.owners.family?.status;
     if (!complete) {
@@ -370,7 +443,7 @@ export class Service {
       return;
     }
     if (family !== 'done') await this.mutateStep(claimId, 3, 'family', 'done', undefined, 'system');
-    const toVerify = docs.filter((d) => d.status === 'uploaded' && d.verification !== 'verified');
+    const toVerify = docs.filter((d) => d.status === 'uploaded' && (d.verification === 'not_started' || d.verification === 'pending'));
     if (toVerify.length === 0) return;
     for (const d of toVerify) {
       d.verification = 'pending';
@@ -393,7 +466,7 @@ export class Service {
       d.verificationRef = r.reference;
       d.verificationNote = r.note;
       await this.repo.putDoc(d);
-      await this.audit(claimId, 'greenid', `document_${r.result}`, `${d.fileName} (${r.reference})`);
+      await this.audit(claimId, 'greenid', `document_${r.result}`, `${d.slot}: ${d.fileName} (${r.reference})`);
       if (r.result === 'failed') failed.push(items.find((i) => i.slot === d.slot)?.label ?? d.slot);
     }
     if (failed.length) {
@@ -412,8 +485,14 @@ export class Service {
   private assertClaimAccess(actor: Principal, claimId: string) {
     if (actor.kind === 'family' && actor.claimId !== claimId) throw new HttpError(403, 'Not allowed');
   }
-  private assertDocAccess(actor: Principal, doc: DocRecord) {
+  private assertDocAccess(actor: Principal, doc: DocRecord, claim: Claim) {
     if (actor.kind === 'family' && doc.claimantId !== null && doc.claimantId !== actor.claimantId) throw new HttpError(403, 'Not allowed');
+    if (actor.kind === 'staff' && !this.staffMaySee(actor.party, claim, doc.slot)) throw new HttpError(403, 'Your team does not have access to this document');
+  }
+  /** Document access by party: NGS and GROW see everything, TAL only the death certificate and the deceased's ID. */
+  private staffMaySee(party: Party, claim: Claim, slot: string) {
+    const item = this.checklist(claim).find((i) => i.slot === slot);
+    return !!item && canStaffAccess(party, item);
   }
   private docForActor(actor: Principal, d: DocRecord) {
     if (actor.kind === 'staff') return d;
@@ -457,7 +536,7 @@ export class Service {
       }));
     const docs = await this.repo.listDocs(actor.claimId);
     const checklist: ChecklistView[] = [];
-    for (const item of this.checklist(claim)) {
+    for (const { staffAccess: _access, ...item } of this.checklist(claim)) {
       const claimantId = item.scope === 'claim' ? null : actor.claimantId;
       const d = this.findDoc(docs, item.slot, claimantId);
       checklist.push({
@@ -467,6 +546,7 @@ export class Service {
           docId: d.docId,
           fileName: d.fileName,
           uploadedAt: d.uploadedAt,
+          variant: d.variant,
           uploadedByYou: d.uploadedBy === `family:${actor.claimantId}`,
           verification: d.verification,
           verificationNote: d.verificationNote,
@@ -476,8 +556,9 @@ export class Service {
     }
     const requests = (await this.repo.listClaimRequests(actor.claimId)).filter((r) => r.claimantId === actor.claimantId);
     return {
-      claim: { claimId: claim.claimId, deceasedName: claim.deceasedName, registeredAt: claim.createdAt },
-      claimant: { claimantId: actor.claimantId, name: actor.name },
+      claim: { claimId: claim.claimId, deceasedName: claim.deceasedName, memberNumber: claim.memberNumber, registeredAt: claim.createdAt },
+      // Use the stored name, because staff can correct it after the family has signed in.
+      claimant: { claimantId: actor.claimantId, name: claimants.find((c) => c.claimantId === actor.claimantId)!.name },
       steps,
       checklist,
       estimate: await this.estimate(states, actor.claimId),
@@ -499,22 +580,62 @@ export class Service {
       createdAt: this.iso(),
     };
     await this.repo.putRequest(r);
-    await this.audit(actor.claimId, this.who(actor), 'claim_specialist_requested');
+    await this.audit(actor.claimId, this.who(actor), 'claim_specialist_requested', actor.name);
     return r;
   }
 
-  async listRequests(_actor: Staff) {
+  private async ownRequest(actor: Family, requestId: string) {
+    const r = await this.repo.getRequest(actor.claimId, requestId);
+    if (!r || r.claimantId !== actor.claimantId) throw new HttpError(404, 'Request not found');
+    return r;
+  }
+  private lockedError() {
+    return new HttpError(409, 'A claim specialist has already been in touch, so this request can no longer be changed here.', 'request_locked');
+  }
+
+  /** The family can change the details of a request until a claim specialist has been in touch. */
+  async editSupportRequest(actor: Family, requestId: string, input: { phone?: unknown; preferredTime?: unknown; topic?: unknown }) {
+    const r = await this.ownRequest(actor, requestId);
+    if (r.status !== 'open') throw this.lockedError();
+    r.phone = text(input.phone, 'Phone number', 40);
+    r.preferredTime = text(input.preferredTime, 'Preferred time', 100, false);
+    r.topic = text(input.topic, 'What you would like help with', 500, false);
+    r.editedAt = this.iso();
+    await this.repo.putRequest(r);
+    await this.audit(actor.claimId, this.who(actor), 'claim_specialist_request_edited', actor.name);
+    return r;
+  }
+
+  async cancelSupportRequest(actor: Family, requestId: string) {
+    const r = await this.ownRequest(actor, requestId);
+    if (r.status === 'cancelled') return r;
+    if (r.status !== 'open') throw this.lockedError();
+    r.status = 'cancelled';
+    r.cancelledAt = this.iso();
+    await this.repo.putRequest(r);
+    await this.audit(actor.claimId, this.who(actor), 'claim_specialist_request_cancelled', actor.name);
+    return r;
+  }
+
+  async listRequests(actor: Staff) {
+    if (actor.party === 'tal') throw new HttpError(403, 'Only NGS or GROW handle claim specialist requests');
     return this.repo.listRequests();
   }
+  /** Both NGS and GROW can work the queue. The request and the activity log record which party made the call. */
   async updateRequest(actor: Staff, claimId: string, requestId: string, status: unknown) {
     if (actor.party === 'tal') throw new HttpError(403, 'Only NGS or GROW handle claim specialist requests');
     if (status !== 'open' && status !== 'contacted' && status !== 'closed') throw new HttpError(400, 'Invalid status');
     const r = await this.repo.getRequest(claimId, requestId);
     if (!r) throw new HttpError(404, 'Request not found');
+    if (r.status === 'cancelled') throw new HttpError(409, 'The family cancelled this request');
     r.status = status;
     r.updatedBy = this.who(actor);
+    if (status === 'contacted') {
+      r.contactedBy = this.who(actor);
+      r.contactedAt = this.iso();
+    }
     await this.repo.putRequest(r);
-    await this.audit(claimId, this.who(actor), 'claim_specialist_request_updated', status);
+    await this.audit(claimId, this.who(actor), 'claim_specialist_request_updated', `${r.claimantName}: ${status}`);
     return r;
   }
 
@@ -523,17 +644,19 @@ export class Service {
     return derived.map((s) => s.state.completedAt ?? '').sort().pop() || undefined;
   }
 
-  async listClaims(_actor: Staff): Promise<ClaimSummary[]> {
+  async listClaims(actor: Staff): Promise<ClaimSummary[]> {
     const out: ClaimSummary[] = [];
     for (const claim of await this.repo.listClaims()) {
       const claimants = await this.repo.listClaimants(claim.claimId);
       const docs = await this.repo.listDocs(claim.claimId);
       const derived = deriveSteps(await this.loadSteps(claim.claimId), claim.claimId);
-      const current = derived.find((s) => s.status !== 'completed');
-      const required = this.requiredEntries(claim, claimants.map((c) => c.claimantId)).filter((e) => !e.item.optional);
+      const visible = derived.filter((s) => canSeeStep(actor.party, s.def.id)); // TAL's view ends at step 7
+      const current = visible.find((s) => s.status !== 'completed');
+      // Count only the required documents this party is allowed to see.
+      const required = this.requiredEntries(claim, claimants.map((c) => c.claimantId)).filter((e) => !e.item.optional && canStaffAccess(actor.party, e.item));
       out.push({
         claim,
-        claimantCount: claimants.length,
+        claimantCount: actor.party === 'tal' ? 0 : claimants.length, // TAL does not see claimant information
         currentStep: current
           ? {
               id: current.def.id,
@@ -544,7 +667,8 @@ export class Service {
             }
           : null,
         waitingOn: current?.pendingOwners ?? [],
-        closedAt: current ? undefined : this.closedAt(derived),
+        closedAt: current ? undefined : this.closedAt(visible),
+        stepLimit: STEP_VIEW_LIMIT[actor.party],
         docsRequired: required.length,
         docsReceived: required.filter((e) => this.slotSatisfied(this.findDoc(docs, e.item.slot, e.claimantId))).length,
       });
@@ -552,21 +676,35 @@ export class Service {
     return out;
   }
 
-  async staffClaimDetail(_actor: Staff, claimId: string): Promise<StaffClaimDetail> {
+  async staffClaimDetail(actor: Staff, claimId: string): Promise<StaffClaimDetail> {
     const claim = await this.mustClaim(claimId);
     const claimants = await this.repo.listClaimants(claimId);
     const docs = await this.repo.listDocs(claimId);
     const derived = deriveSteps(await this.loadSteps(claimId), claimId);
     const checklist: StaffClaimDetail['checklist'] = [];
     for (const e of this.requiredEntries(claim, claimants.map((c) => c.claimantId))) {
+      if (!canStaffAccess(actor.party, e.item)) continue; // hidden entirely, not just greyed out
       const d = this.findDoc(docs, e.item.slot, e.claimantId);
       checklist.push({ ...e.item, claimantId: e.claimantId, doc: d && (d.status === 'uploaded' || d.pending) ? d : undefined });
     }
+    // Activity about documents this party cannot see is hidden too, so file names do not leak through the log.
+    const audit = (await this.repo.listAudit(claimId)).filter((a) => {
+      const aboutPeople = ['claimant_added', 'claimant_updated', 'passcode_reissued', 'claim_specialist_requested', 'claim_specialist_request_updated', 'claim_specialist_request_edited', 'claim_specialist_request_cancelled', 'family_signed_in'];
+      if (actor.party === 'tal' && aboutPeople.includes(a.action)) return false;
+      if (a.action.startsWith('step_')) {
+        const n = Number(/^Step (\d+)/.exec(a.detail ?? '')?.[1]); // entries about steps this party cannot see are hidden
+        return !Number.isFinite(n) || canSeeStep(actor.party, n);
+      }
+      if (!a.action.startsWith('document_') && a.action !== 'duplicate_blocked') return true;
+      return this.staffMaySee(actor.party, claim, (a.detail ?? '').split(':')[0]!);
+    });
+    const visibleSteps = derived.filter((s) => canSeeStep(actor.party, s.def.id));
     return {
       claim,
-      closedAt: derived.every((s) => s.status === 'completed') ? this.closedAt(derived) : undefined,
-      claimants: claimants.map(({ salt: _s, passcodeHash: _h, ...c }) => c),
-      steps: derived.map((s) => ({
+      closedAt: visibleSteps.every((s) => s.status === 'completed') ? this.closedAt(visibleSteps) : undefined,
+      // Claimant details and claim specialist requests are for NGS and GROW. TAL gets neither.
+      claimants: actor.party === 'tal' ? [] : claimants.map(({ salt: _s, passcodeHash: _h, ...c }) => c),
+      steps: visibleSteps.map((s) => ({
         stepId: s.def.id,
         title: s.def.title,
         status: s.status,
@@ -574,8 +712,8 @@ export class Service {
         completedAt: s.state.completedAt,
       })),
       checklist,
-      audit: (await this.repo.listAudit(claimId)).slice(0, 100),
-      supportRequests: await this.repo.listClaimRequests(claimId),
+      audit: audit.slice(0, 100),
+      supportRequests: actor.party === 'tal' ? [] : await this.repo.listClaimRequests(claimId),
     };
   }
 }
